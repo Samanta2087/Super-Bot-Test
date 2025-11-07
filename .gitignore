@@ -1,0 +1,18 @@
+# Sensitive files - DO NOT COMMIT
+credentials.json
+token.json
+bot_database.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+config_local.py
+
+# OS files
+.DS_Store
+Thumbs.db

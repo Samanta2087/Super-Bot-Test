@@ -144,10 +144,10 @@ except ImportError:
     exit()
 
 # --- 2. Configuration ---
-# ⚠️ PASTE YOUR BOT TOKEN HERE ⚠️
-BOT_TOKEN = "8400046185:AAGRaiIE8he93ereZVy41a6c_qwLVOFQis0"
-# ⚠️ PASTE YOUR NUMERICAL TELEGRAM USER ID HERE ⚠️
-ADMIN_ID = 5193181737  # <--- IMPORTANT! REPLACE 0 WITH YOUR ID
+# Import configuration from config.py
+from config import BOT_TOKEN, ADMIN_USER_ID
+
+ADMIN_ID = ADMIN_USER_ID  # Keep backward compatibility
 
 # FFmpeg path configuration - NO ADMIN RIGHTS NEEDED!
 # Try WinGet installation first, then system PATH
