@@ -1,4 +1,5 @@
 # Sensitive files - DO NOT COMMIT
+.env
 credentials.json
 token.json
 bot_database.db
@@ -8,10 +9,6 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Environment
-.env
-config_local.py
 
 # OS files
 .DS_Store

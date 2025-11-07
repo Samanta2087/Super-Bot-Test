@@ -30,6 +30,10 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import functools
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Fix timezone issue for APScheduler BEFORE importing telegram  
 import pytz
@@ -144,10 +148,9 @@ except ImportError:
     exit()
 
 # --- 2. Configuration ---
-# Import configuration from config.py
-from config import BOT_TOKEN, ADMIN_USER_ID
-
-ADMIN_ID = ADMIN_USER_ID  # Keep backward compatibility
+# Load from .env file
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_USER_ID", 0))
 
 # FFmpeg path configuration - NO ADMIN RIGHTS NEEDED!
 # Try WinGet installation first, then system PATH

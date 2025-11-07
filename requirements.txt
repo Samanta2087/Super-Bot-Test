@@ -1,6 +1,9 @@
 # Core Telegram Bot
 python-telegram-bot>=20.0
 
+# Environment Variables
+python-dotenv
+
 # Async Infrastructure
 redis>=5.0
 aioredis>=2.0

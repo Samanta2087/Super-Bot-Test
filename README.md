@@ -24,24 +24,32 @@ cd Super-Bot-Test
 pip install -r requirements.txt
 ```
 
-### 3. Configure Credentials
+### 3. Configure Environment Variables
+
+Copy the example file and edit with your values:
+```bash
+copy .env.example .env
+```
+
+Then edit `.env` file:
 
 #### A. Telegram Bot Token
 1. Message [@BotFather](https://t.me/BotFather) on Telegram
 2. Create a new bot and get your token
-3. Edit `config.py` and replace `BOT_TOKEN` with your token
+3. Put the token in `.env` → `BOT_TOKEN=your_token_here`
 
-#### B. Google Drive API Setup
+#### B. Admin User ID
+1. Get your Telegram User ID (message [@userinfobot](https://t.me/userinfobot))
+2. Put your ID in `.env` → `ADMIN_USER_ID=your_id_here`
+
+#### C. Google Drive API Setup
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project
 3. Enable Google Drive API
 4. Create OAuth 2.0 credentials
 5. Download credentials and save as `credentials.json` in the bot folder
-6. Run the bot once to generate `token.json` (it will open browser for authorization)
-
-#### C. Admin Configuration
-1. Get your Telegram User ID (message [@userinfobot](https://t.me/userinfobot))
-2. Edit `config.py` and replace `ADMIN_USER_ID` with your ID
+6. Copy the client ID, secret, and project ID to `.env` file
+7. Run the bot once to generate `token.json` (it will open browser for authorization)
 
 ### 4. Run the Bot
 ```bash
@@ -52,7 +60,8 @@ python super.py
 ```
 Super-Bot-Test/
 ├── super.py              # Main bot code
-├── config.py             # Configuration (BOT_TOKEN, settings)
+├── .env                  # Your credentials (create from .env.example)
+├── .env.example          # Example configuration file
 ├── requirements.txt      # Python dependencies
 ├── credentials.json      # Google Drive credentials (create this)
 ├── token.json           # Auto-generated after first run
@@ -61,17 +70,25 @@ Super-Bot-Test/
 
 ## Important Notes
 ⚠️ **Never share these files publicly:**
+- `.env` - Contains all your sensitive credentials
 - `credentials.json` - Contains Google API secrets
 - `token.json` - Contains access tokens
-- `config.py` - Contains your bot token
 - `bot_database.db` - Contains user data
 
+✅ **Safe to share:**
+- `.env.example` - Template without real credentials
+- `super.py` - Main code
+- `requirements.txt` - Dependencies
+- `README.md` - Documentation
+
 ## Features Configuration
-Edit `config.py` to customize:
-- Upload limits (Free: 50MB, Premium: 150MB)
-- Video quality options
-- Payment UPI ID
-- Premium pricing
+All settings are in `.env` file:
+- `BOT_TOKEN` - Your Telegram bot token
+- `ADMIN_USER_ID` - Your Telegram user ID
+- `PAYMENT_UPI_ID` - UPI ID for payments
+- `PAYMENT_AMOUNT` - Premium price in rupees
+- `FREE_UPLOAD_LIMIT` - Free tier limit (MB)
+- `PREMIUM_UPLOAD_LIMIT` - Premium tier limit (MB)
 
 ## Support
 For issues or questions, contact the developer.
