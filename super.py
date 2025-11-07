@@ -172,9 +172,10 @@ else:
         import subprocess
         result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2)
         if result.returncode == 0:
-            logger.info("Using system FFmpeg from PATH")
+            print("✓ Using system FFmpeg from PATH")
     except:
-        logger.warning("FFmpeg not found - video/audio features may not work")
+        print("⚠ FFmpeg not found - video/audio features may not work")
+        print("  Install FFmpeg: apt-get install ffmpeg (Linux) or download from ffmpeg.org")
 
 # --- 2.5. Google Drive Setup ---
 from googleapiclient.discovery import build
