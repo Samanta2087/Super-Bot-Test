@@ -150,7 +150,38 @@ except ImportError:
 # --- 2. Configuration ---
 # Load from .env file
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_USER_ID", 0))
+
+# Parse ADMIN_ID safely
+try:
+    admin_id_str = os.getenv("ADMIN_USER_ID", "0")
+    ADMIN_ID = int(admin_id_str) if admin_id_str.isdigit() else 0
+except (ValueError, AttributeError):
+    ADMIN_ID = 0
+
+# Validate configuration
+if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+    print("\n" + "="*60)
+    print("❌ ERROR: Bot token not configured!")
+    print("="*60)
+    print("\n📋 Setup Instructions:")
+    print("1. Copy .env.example to .env:")
+    print("   cp .env.example .env")
+    print("\n2. Edit .env file:")
+    print("   nano .env")
+    print("\n3. Set your credentials:")
+    print("   BOT_TOKEN=your_bot_token_from_@BotFather")
+    print("   ADMIN_USER_ID=your_telegram_user_id")
+    print("\n4. Save and run again")
+    print("="*60 + "\n")
+    exit(1)
+
+if ADMIN_ID == 0:
+    print("\n" + "="*60)
+    print("⚠️  WARNING: ADMIN_USER_ID not set!")
+    print("="*60)
+    print("Admin features will be disabled.")
+    print("Get your user ID from @userinfobot and add to .env")
+    print("="*60 + "\n")
 
 # FFmpeg path configuration - NO ADMIN RIGHTS NEEDED!
 # Try WinGet installation first, then system PATH
@@ -5852,10 +5883,7 @@ async def done_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- 7. Main Bot Function ---
 def main():
     """Starts the bot and sets up all handlers."""
-    if BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE" or ADMIN_ID == 0:
-        print("!!! ERROR: Please set your BOT_TOKEN and ADMIN_ID in the script.")
-        return
-
+    # Configuration is already validated at startup
     init_db()
     
     # OPTIMIZED Application - Simple and reliable (without job queue to avoid timezone issues)
