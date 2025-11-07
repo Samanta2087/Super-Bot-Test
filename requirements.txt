@@ -1,0 +1,47 @@
+# Core Telegram Bot
+python-telegram-bot>=20.0
+
+# Async Infrastructure
+redis>=5.0
+aioredis>=2.0
+aiofiles>=25.0
+aiocache>=0.12
+aiohttp>=3.13
+aiosqlite>=0.21
+
+# Web Server (for webhooks)
+fastapi>=0.119
+uvicorn[standard]>=0.37
+
+# Media Processing
+moviepy
+pillow
+PyMuPDF
+python-docx
+reportlab
+
+# Audio & Text
+gtts
+deep-translator
+
+# Downloads & Utilities
+yt-dlp
+pyshorteners
+qrcode
+cryptography
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# Optional - Monitoring
+prometheus-client
+python-json-logger
+
+# Optional - Database
+psycopg2-binary  # PostgreSQL
+motor  # MongoDB async
+
+# Development
+pytest
+pytest-asyncio
+locust  # Load testing
