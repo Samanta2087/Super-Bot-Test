@@ -42,14 +42,40 @@ Then edit `.env` file:
 1. Get your Telegram User ID (message [@userinfobot](https://t.me/userinfobot))
 2. Put your ID in `.env` → `ADMIN_USER_ID=your_id_here`
 
-#### C. Google Drive API Setup
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project
-3. Enable Google Drive API
-4. Create OAuth 2.0 credentials
-5. Download credentials and save as `credentials.json` in the bot folder
-6. Copy the client ID, secret, and project ID to `.env` file
-7. Run the bot once to generate `token.json` (it will open browser for authorization)
+#### C. Google Drive API Setup (IMPORTANT!)
+
+**On Linux/Remote Server:**
+
+Since you can't download files through browser on a remote server, you need to create `credentials.json` manually:
+
+```bash
+cd ~/Super-Bot-Test
+
+# Create credentials.json (use your own values from Google Cloud Console)
+cat > credentials.json << 'EOF'
+{
+  "installed": {
+    "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "project_id": "your-project-id",
+    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+    "token_uri": "https://oauth2.googleapis.com/token",
+    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+    "client_secret": "YOUR_CLIENT_SECRET",
+    "redirect_uris": ["http://localhost"]
+  }
+}
+EOF
+```
+
+**For token.json (OAuth authorization):**
+
+Option 1: Generate on your local PC and upload
+1. Run bot on your local PC first
+2. It will open browser for Google authorization
+3. This creates `token.json`
+4. Upload to server: `scp token.json user@server:~/Super-Bot-Test/`
+
+Option 2: The bot will show instructions if token.json is missing
 
 ### 4. Run the Bot
 ```bash
