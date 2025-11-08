@@ -35,6 +35,19 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Bot Monitoring System (Optional)
+try:
+    from bot_monitor import BotMonitor
+    import time as time_module
+    MONITORING_ENABLED = True
+except ImportError:
+    MONITORING_ENABLED = False
+    class BotMonitor:
+        """Dummy class when monitoring is not installed"""
+        def log_activity(self, *args, **kwargs): pass
+        def log_error(self, *args, **kwargs): pass
+        def update_feature_usage(self, *args, **kwargs): pass
+
 # Fix timezone issue for APScheduler BEFORE importing telegram  
 import pytz
 
@@ -228,6 +241,19 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Initialize Bot Monitor
+if MONITORING_ENABLED:
+    try:
+        monitor = BotMonitor()
+        logger.info("✅ Bot monitoring enabled")
+    except Exception as e:
+        logger.warning(f"⚠️  Failed to initialize monitoring: {e}")
+        MONITORING_ENABLED = False
+        monitor = BotMonitor()  # Use dummy
+else:
+    monitor = BotMonitor()  # Use dummy class
+    logger.info("⚠️  Bot monitoring disabled (bot_monitor.py not found)")
 
 # Thread pool for CPU-intensive operations (file processing, downloads, etc.)
 # This allows true parallel processing for multiple users
