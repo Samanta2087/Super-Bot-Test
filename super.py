@@ -505,13 +505,15 @@ def get_drive_service():
     # Refresh expired credentials
     if creds and creds.expired and creds.refresh_token:
         try:
+            logger.info("Token expired, refreshing...")
             creds.refresh(Request())
-            logger.info("Refreshed OAuth2 token")
+            logger.info("✓ OAuth2 token refreshed successfully")
             # Save refreshed token
             with open(TOKEN_FILE, 'w') as token:
                 token.write(creds.to_json())
         except Exception as e:
-            logger.warning(f"Token refresh failed: {e}")
+            logger.error(f"❌ Token refresh failed: {e}")
+            logger.error("Please generate a new token.json file")
             creds = None
     
     # If no valid OAuth2 credentials, try to create them
@@ -530,14 +532,21 @@ def get_drive_service():
                     return None
                 else:
                     # It's OAuth2 credentials - run authorization flow
-                    logger.info("Starting OAuth2 authorization flow...")
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        CREDENTIALS_FILE, SCOPES)
-                    creds = flow.run_local_server(port=0)
-                    # Save credentials for next run
-                    with open(TOKEN_FILE, 'w') as token:
-                        token.write(creds.to_json())
-                    logger.info("OAuth2 authorization successful!")
+                    logger.error("="*60)
+                    logger.error("❌ OAuth2 authorization required!")
+                    logger.error("="*60)
+                    logger.error("token.json is missing or invalid.")
+                    logger.error("")
+                    logger.error("On a headless server (no browser), you need to:")
+                    logger.error("1. Generate token.json on your local PC")
+                    logger.error("2. Copy it to the server")
+                    logger.error("")
+                    logger.error("Steps:")
+                    logger.error("  - Run bot on Windows/Mac (with browser)")
+                    logger.error("  - Authorize Google Drive access")
+                    logger.error("  - Copy the generated token.json to server")
+                    logger.error("="*60)
+                    return None
             except Exception as e:
                 logger.error(f"Failed to authenticate: {e}")
                 return None
