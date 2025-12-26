@@ -6020,7 +6020,7 @@ def main():
     print("🗑️ Auto-cleanup enabled: Old downloads removed every 5 minutes")
     # WEBHOOK SETUP (Professional Mode)
 print("Starting Webhook on https://slvk.shop/webhook...")
-application.run_webhook(
+Application.run_webhook(
     listen="127.0.0.1",
     port=8443,
     url_path="webhook",
