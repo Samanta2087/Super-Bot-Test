@@ -6018,7 +6018,14 @@ def main():
     print("Multiple users can now use the bot simultaneously!")
     print("All requests are processed in parallel for maximum speed.")
     print("🗑️ Auto-cleanup enabled: Old downloads removed every 5 minutes")
-    application.run_polling()
+    # WEBHOOK SETUP (Professional Mode)
+print("Starting Webhook on https://slvk.shop/webhook...")
+application.run_webhook(
+    listen="127.0.0.1",
+    port=8443,
+    url_path="webhook",
+    webhook_url="https://slvk.shop/webhook"
+)
 
 if __name__ == '__main__':
     main()
