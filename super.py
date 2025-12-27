@@ -4763,6 +4763,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'cookiefile': '/root/Super-Bot-Test/cookies.txt',  # Cookie file for authentication
                 'noplaylist': True,
                 'quiet': False,  # Changed to False to see errors in logs
+                'verbose': True,  # Add full debug info
                 'no_warnings': True,
                 'extract_flat': False,
                 # Anti-blocking measures
