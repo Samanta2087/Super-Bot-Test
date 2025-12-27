@@ -31,13 +31,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 import functools
 from dotenv import load_dotenv
-import tempfile
-import shutil
-from contextlib import asynccontextmanager, contextmanager
-from pathlib import Path
+import os
 
 # Load environment variables from .env file
-load_dotenv(dotenv_path=Path(__file__).parent / '.env', override=True)
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'), override=True)
 
 # Bot Monitoring System (Optional)
 try:
@@ -270,192 +267,6 @@ def run_in_executor(func):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(executor, functools.partial(func, *args, **kwargs))
     return wrapper
-
-# --- File Size Limits (2 GB max to prevent crashes) ---
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB in bytes
-MAX_FILE_SIZE_MB = MAX_FILE_SIZE / (1024 * 1024)  # 2048 MB
-
-# --- Temporary Folder Management ---
-class TempFolderManager:
-    """Thread-safe manager for user-specific temporary folders"""
-    def __init__(self, base_dir="temp_downloads"):
-        self.base_dir = Path(base_dir)
-        self.base_dir.mkdir(exist_ok=True)
-        self._lock = threading.Lock()
-        self._active_folders = {}  # Track active temp folders per user
-    
-    def create_user_temp_folder(self, user_id: int, task_name: str = "download") -> Path:
-        """Create isolated temporary folder for a user's task"""
-        with self._lock:
-            timestamp = int(time.time() * 1000)  # milliseconds for uniqueness
-            folder_name = f"user_{user_id}_{task_name}_{timestamp}"
-            temp_folder = self.base_dir / folder_name
-            temp_folder.mkdir(parents=True, exist_ok=True)
-            
-            # Track active folder
-            if user_id not in self._active_folders:
-                self._active_folders[user_id] = []
-            self._active_folders[user_id].append(temp_folder)
-            
-            logger.info(f"Created temp folder: {temp_folder}")
-            return temp_folder
-    
-    def cleanup_folder(self, folder_path: Path):
-        """Safely delete a temporary folder and all its contents"""
-        try:
-            if folder_path.exists():
-                shutil.rmtree(folder_path, ignore_errors=True)
-                logger.info(f"✅ Cleaned up temp folder: {folder_path}")
-                
-                # Remove from tracking
-                with self._lock:
-                    for user_folders in self._active_folders.values():
-                        if folder_path in user_folders:
-                            user_folders.remove(folder_path)
-        except Exception as e:
-            logger.warning(f"Error cleaning folder {folder_path}: {e}")
-    
-    def cleanup_user_folders(self, user_id: int):
-        """Clean up all temporary folders for a specific user"""
-        with self._lock:
-            folders = self._active_folders.get(user_id, [])
-            for folder in folders[:]:
-                self.cleanup_folder(folder)
-            self._active_folders[user_id] = []
-    
-    def cleanup_old_folders(self, max_age_seconds: int = 3600):
-        """Clean up folders older than max_age_seconds (default 1 hour)"""
-        try:
-            current_time = time.time()
-            for folder in self.base_dir.iterdir():
-                if folder.is_dir():
-                    folder_age = current_time - folder.stat().st_mtime
-                    if folder_age > max_age_seconds:
-                        self.cleanup_folder(folder)
-        except Exception as e:
-            logger.error(f"Error in cleanup_old_folders: {e}")
-
-# Global temp folder manager
-temp_folder_manager = TempFolderManager()
-
-@asynccontextmanager
-async def temp_download_folder(user_id: int, task_name: str = "download"):
-    """Context manager for auto-cleanup of temp folders"""
-    folder = temp_folder_manager.create_user_temp_folder(user_id, task_name)
-    try:
-        yield folder
-    finally:
-        # Cleanup happens in background to not block
-        loop = asyncio.get_event_loop()
-        loop.run_in_executor(executor, temp_folder_manager.cleanup_folder, folder)
-
-def check_file_size_safe(file_path: str, max_size: int = MAX_FILE_SIZE) -> tuple[bool, float]:
-    """Check if file size is within safe limits. Returns (is_safe, size_mb)"""
-    try:
-        file_size = os.path.getsize(file_path)
-        size_mb = file_size / (1024 * 1024)
-        is_safe = file_size <= max_size
-        return is_safe, size_mb
-    except Exception as e:
-        logger.error(f"Error checking file size: {e}")
-        return False, 0.0
-
-async def validate_telegram_file_size(file_obj, max_size: int = MAX_FILE_SIZE) -> tuple[bool, str]:
-    """Validate Telegram file size before download. Returns (is_valid, message)"""
-    try:
-        # Telegram provides file_size in the file object
-        file_size = getattr(file_obj, 'file_size', 0)
-        
-        if file_size == 0:
-            # File size unknown, allow but warn
-            return True, "File size unknown, proceeding with caution"
-        
-        size_mb = file_size / (1024 * 1024)
-        
-        if file_size > max_size:
-            message = (
-                f"❌ **File Too Large**\n\n"
-                f"📊 File size: {size_mb:.1f} MB\n"
-                f"⚠️ Maximum allowed: {MAX_FILE_SIZE_MB:.0f} MB (2 GB)\n\n"
-                f"**Why this limit?**\n"
-                f"• Prevents bot crashes\n"
-                f"• Ensures stability for all users\n"
-                f"• Protects server resources\n\n"
-                f"💡 Try compressing the file or splitting it into smaller parts."
-            )
-            return False, message
-        
-        return True, f"File size OK: {size_mb:.1f} MB"
-        
-    except Exception as e:
-        logger.error(f"Error validating file size: {e}")
-        return True, "Could not validate size, proceeding"
-
-async def download_file_streaming(file_obj, destination: Path, chunk_size: int = 65536) -> bool:
-    """
-    Stream download file from Telegram without loading into memory.
-    Uses chunk-based streaming to handle large files safely.
-    
-    Args:
-        file_obj: Telegram file object
-        destination: Path to save file
-        chunk_size: Size of chunks to read (default 64KB)
-    
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        # Get download URL
-        file_path = await file_obj.get_file()
-        
-        # Stream download using httpx (supports async streaming)
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            async with client.stream('GET', file_path.file_path) as response:
-                response.raise_for_status()
-                
-                # Write chunks to file without loading entire file into memory
-                with open(destination, 'wb') as f:
-                    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-                            
-                            # Check file size periodically during download
-                            current_size = f.tell()
-                            if current_size > MAX_FILE_SIZE:
-                                # File exceeded limit during download
-                                f.close()
-                                destination.unlink(missing_ok=True)  # Delete partial file
-                                logger.error(f"File exceeded {MAX_FILE_SIZE_MB:.0f} MB during download")
-                                return False
-        
-        logger.info(f"✅ Streamed download to: {destination}")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Streaming download failed: {e}")
-        # Clean up partial file
-        if destination.exists():
-            destination.unlink(missing_ok=True)
-        return False
-
-def open_file_streaming(file_path: Path, chunk_size: int = 65536):
-    """
-    Generator to read file in chunks for streaming upload.
-    Never loads entire file into memory.
-    
-    Args:
-        file_path: Path to file
-        chunk_size: Size of chunks (default 64KB)
-    
-    Yields:
-        bytes: File chunks
-    """
-    with open(file_path, 'rb') as f:
-        while True:
-            chunk = f.read(chunk_size)
-            if not chunk:
-                break
-            yield chunk
 
 # --- 3.5. Optimized Data Structures for Multi-User Handling ---
 
@@ -969,7 +780,7 @@ def shorten_link_shrinkme(long_url: str, custom_alias: str = "") -> str:
 
 # --- Automatic File Cleanup System ---
 async def cleanup_old_downloads():
-    """Periodically clean up old download files and temp folders"""
+    """Periodically clean up old download files"""
     while True:
         try:
             await asyncio.sleep(300)  # Run every 5 minutes
@@ -989,20 +800,11 @@ async def cleanup_old_downloads():
                     except Exception as e:
                         logger.debug(f"Could not clean {filename}: {e}")
             
-            # Clean up old temp folders (over 1 hour old)
-            temp_folder_manager.cleanup_old_folders(max_age_seconds=3600)
-            
             if cleaned_count > 0:
                 logger.info(f"✅ Cleanup cycle complete: {cleaned_count} files removed")
                 
         except Exception as e:
             logger.error(f"Error in cleanup_old_downloads: {e}")
-            
-            if cleaned_count > 0:
-                logger.info(f"✅ Auto-cleanup: Removed {cleaned_count} old file(s)")
-                
-        except Exception as e:
-            logger.error(f"Error in cleanup task: {e}")
 
 # --- 4. Database Setup ---
 class DatabasePool:
@@ -3992,102 +3794,75 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⏳ Please wait for your previous task to complete!")
         return
     
-    # Use temp folder for this user's conversion
-    async with temp_download_folder(user_id, "video_to_mp3") as temp_folder:
-        try:
-            # Smooth animation for video processing
-            loading_msg = await update.message.reply_text("🎬 Preparing video...")
-            await asyncio.sleep(0.5)
-            
-            file = await context.bot.get_file(file_id)
-            
-            # Validate file size BEFORE downloading
-            is_valid, message = await validate_telegram_file_size(file)
-            if not is_valid:
-                await loading_msg.edit_text(message, parse_mode=ParseMode.MARKDOWN)
-                task_lock.unlock_user(user_id)
-                return
-            
-            await loading_msg.edit_text("📥 Downloading video...")
-            await asyncio.sleep(0.3)
-            
-            # Use streaming download to temp folder
-            video_path = temp_folder / f"video_{user_id}_{int(time.time())}.mp4"
-            audio_path = temp_folder / f"audio_{user_id}_{int(time.time())}.mp3"
-            
-            success = await download_file_streaming(file, video_path)
-            if not success:
-                await loading_msg.edit_text(
-                    "❌ Download failed. File may be too large or network error occurred.",
-                    reply_markup=get_main_menu_keyboard()
-                )
-                task_lock.unlock_user(user_id)
-                return
-            
-            await loading_msg.edit_text("🎵 Extracting audio track...")
-            await asyncio.sleep(0.3)
-            
-            # Extract audio in thread pool (non-blocking)
-            loop = asyncio.get_event_loop()
-            
-            def extract_audio(video_file, audio_file):
-                """CPU-intensive video processing"""
-                video_clip = VideoFileClip(str(video_file))
-                video_clip.audio.write_audiofile(str(audio_file), logger=None)
-                video_clip.close()
-            
-            await loop.run_in_executor(executor, extract_audio, video_path, audio_path)
-            
-            await loading_msg.edit_text("🎶 Converting to MP3...")
-            await asyncio.sleep(0.3)
-            
-            # Check output file size
-            is_safe, size_mb = check_file_size_safe(str(audio_path))
-            if not is_safe:
-                await loading_msg.edit_text(
-                    f"❌ Output file too large ({size_mb:.1f} MB). Maximum is {MAX_FILE_SIZE_MB:.0f} MB.",
-                    reply_markup=get_main_menu_keyboard()
-                )
-                task_lock.unlock_user(user_id)
-                return
-            
-            await loading_msg.edit_text("📤 Uploading audio file...")
-            
-            # Stream upload (Telegram handles streaming internally when passed file object)
-            with open(audio_path, 'rb') as audio_file:
-                await update.message.reply_audio(
-                    audio=audio_file, 
-                    title="Converted Audio", 
-                    caption="✅ Audio extracted successfully!"
-                )
-            
-            # Show success with main menu
-            await loading_msg.edit_text(
-                "✅ *Video to MP3 conversion complete!*\n\n"
-                "🎯 Returning to main menu...",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
+    try:
+        # Smooth animation for video processing
+        loading_msg = await update.message.reply_text("🎬 Preparing video...")
+        await asyncio.sleep(0.5)
+        
+        file = await context.bot.get_file(file_id)
+        
+        await loading_msg.edit_text("📥 Downloading video...")
+        await asyncio.sleep(0.3)
+        
+        # Simple download
+        await file.download_to_drive(file_path)
+        
+        await loading_msg.edit_text("🎵 Extracting audio track...")
+        await asyncio.sleep(0.3)
+        
+        # Extract audio in thread pool (non-blocking)
+        loop = asyncio.get_event_loop()
+        
+        def extract_audio(video_file, audio_file):
+            """CPU-intensive video processing"""
+            video_clip = VideoFileClip(str(video_file))
+            video_clip.audio.write_audiofile(str(audio_file), logger=None)
+            video_clip.close()
+        
+        await loop.run_in_executor(executor, extract_audio, file_path, audio_path)
+        
+        await loading_msg.edit_text("🎶 Converting to MP3...")
+        await asyncio.sleep(0.3)
+        
+        await loading_msg.edit_text("📤 Uploading audio file...")
+        
+        # Stream upload (Telegram handles streaming internally when passed file object)
+        with open(audio_path, 'rb') as audio_file:
+            await update.message.reply_audio(
+                audio=audio_file, 
+                title="Converted Audio", 
+                caption="✅ Audio extracted successfully!"
             )
-            
-            # Auto-return to main menu after 1.5 seconds
-            await asyncio.sleep(1.5)
-            await loading_msg.edit_text(
-                "🤖 *Welcome to Super Bot!*\n\n"
-                "Choose a feature from the menu below:",
-                reply_markup=get_main_menu_keyboard(),
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-        except Exception as e:
-            logger.error(f"Error in handle_video: {e}")
-            await loading_msg.edit_text(
-                "❌ Failed to convert video. File might be too large or corrupted.",
-                reply_markup=get_main_menu_keyboard()
-            )
-        finally:
-            # Unlock user after task completion
-            task_lock.unlock_user(user_id)
-            # Temp folder cleanup happens automatically
+        
+        # Show success with main menu
+        await loading_msg.edit_text(
+            "✅ *Video to MP3 conversion complete!*\n\n"
+            "🎯 Returning to main menu...",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Auto-return to main menu after 1.5 seconds
+        await asyncio.sleep(1.5)
+        await loading_msg.edit_text(
+            "🤖 *Welcome to Super Bot!*\n\n"
+            "Choose a feature from the menu below:",
+            reply_markup=get_main_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in handle_video: {e}")
+        await loading_msg.edit_text(
+            "❌ Failed to convert video. File might be too large or corrupted.",
+            reply_markup=get_main_menu_keyboard()
+        )
+    finally:
+        # Unlock user after task completion
+        task_lock.unlock_user(user_id)
+        # Cleanup files
+        if os.path.exists(file_path): os.remove(file_path)
+        if os.path.exists(audio_path): os.remove(audio_path)
 
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -4230,139 +4005,122 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     loading_msg = await update.message.reply_text("📤 Uploading file to storage...")
     
-    # Use temp folder for this upload
-    async with temp_download_folder(user_id, "file_upload") as temp_folder:
-        try:
-            # Get file info
-            if update.message.document:
-                file = update.message.document
-                file_obj = await context.bot.get_file(file.file_id)
-                filename = file.file_name
-                file_size = file.file_size
-            elif update.message.photo:
-                file = update.message.photo[-1]  # Get largest photo
-                file_obj = await context.bot.get_file(file.file_id)
-                filename = f"photo_{int(time.time())}.jpg"
-                file_size = file.file_size
-            elif update.message.video:
-                file = update.message.video
-                file_obj = await context.bot.get_file(file.file_id)
-                filename = file.file_name or f"video_{int(time.time())}.mp4"
-                file_size = file.file_size
-            elif update.message.audio:
-                file = update.message.audio
-                file_obj = await context.bot.get_file(file.file_id)
-                filename = file.file_name or f"audio_{int(time.time())}.mp3"
-                file_size = file.file_size
-            else:
-                await loading_msg.edit_text("❌ Unsupported file type. Please send a document, photo, video, or audio file.")
-                task_lock.unlock_user(user_id)
-                return
-            
-            # Validate file size BEFORE downloading
-            is_valid, message = await validate_telegram_file_size(file)
-            if not is_valid:
-                await loading_msg.edit_text(message, parse_mode=ParseMode.MARKDOWN)
-                task_lock.unlock_user(user_id)
-                return
-            
-            # Download file with streaming to temp folder
-            local_path = temp_folder / filename
-            
-            await loading_msg.edit_text("📥 Downloading file...")
-            success = await download_file_streaming(file_obj, local_path)
-            
-            if not success:
-                await loading_msg.edit_text(
-                    "❌ Download failed. File may be too large or network error occurred.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                task_lock.unlock_user(user_id)
-                return
+    try:
+        # Get file info
+        if update.message.document:
+            file = update.message.document
+            file_obj = await context.bot.get_file(file.file_id)
+            filename = file.file_name
+            file_size = file.file_size
+        elif update.message.photo:
+            file = update.message.photo[-1]  # Get largest photo
+            file_obj = await context.bot.get_file(file.file_id)
+            filename = f"photo_{int(time.time())}.jpg"
+            file_size = file.file_size
+        elif update.message.video:
+            file = update.message.video
+            file_obj = await context.bot.get_file(file.file_id)
+            filename = file.file_name or f"video_{int(time.time())}.mp4"
+            file_size = file.file_size
+        elif update.message.audio:
+            file = update.message.audio
+            file_obj = await context.bot.get_file(file.file_id)
+            filename = file.file_name or f"audio_{int(time.time())}.mp3"
+            file_size = file.file_size
+        else:
+            await loading_msg.edit_text("❌ Unsupported file type. Please send a document, photo, video, or audio file.")
+            task_lock.unlock_user(user_id)
+            return
         
-            # Upload to Google Drive
-            await loading_msg.edit_text("☁️ Uploading to Google Drive...")
+        # Download file
+        local_path = filename
+        
+        await loading_msg.edit_text("📥 Downloading file...")
+        await file_obj.download_to_drive(local_path)
+    
+        # Upload to Google Drive
+        await loading_msg.edit_text("☁️ Uploading to Google Drive...")
+        
+        # Prepare Google Drive service BEFORE try so NameError cannot occur
+        drive_service = get_drive_service()
+        if not drive_service:
+            await loading_msg.edit_text(
+                "❌ **Google Drive Authentication Failed**\n\n"
+                "• Missing or invalid credentials.json / token.json\n"
+                "• Or OAuth consent not completed.\n\n"
+                "Fix: Place credentials.json and run a simple upload to generate token.json.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            task_lock.unlock_user(user_id)
+            return
+
+        try:
+            # Upload file to Google Drive with streaming
+            file_metadata = {
+                'name': filename,
+                'parents': [DRIVE_FOLDER_ID] if DRIVE_FOLDER_ID else []
+            }
             
-            # Prepare Google Drive service BEFORE try so NameError cannot occur
-            drive_service = get_drive_service()
-            if not drive_service:
-                await loading_msg.edit_text(
-                    "❌ **Google Drive Authentication Failed**\n\n"
-                    "• Missing or invalid credentials.json / token.json\n"
-                    "• Or OAuth consent not completed.\n\n"
-                    "Fix: Place credentials.json and run a simple upload to generate token.json.",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                task_lock.unlock_user(user_id)
-                return
+            # Use MediaFileUpload with resumable for streaming upload
+            media = MediaFileUpload(str(local_path), resumable=True)
+            drive_file = drive_service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id, webViewLink'
+            ).execute()
+            
+            drive_file_id = drive_file.get('id')
+            
+            # Make file publicly accessible
+            drive_service.permissions().create(
+                fileId=drive_file_id,
+                body={'type': 'anyone', 'role': 'reader'}
+            ).execute()
+            
+            # Get shareable link
+            share_link = f"https://drive.google.com/file/d/{drive_file_id}/view?usp=sharing"
+            
+            # Save to database and capture inserted row id
+            inserted_id = db_pool.execute(
+                "INSERT INTO stored_files (user_id, filename, file_size, drive_file_id, share_link) VALUES (?, ?, ?, ?, ?)",
+                (user_id, filename, file_size, drive_file_id, share_link),
+                fetch='insert'
+            )
+            
+            # Format file size
+            size_mb = file_size / (1024 * 1024)
+            if size_mb < 1:
+                size_str = f"{file_size / 1024:.1f} KB"
+            else:
+                size_str = f"{size_mb:.1f} MB"
+            
+            success_text = (
+                f"✅ **File Uploaded Successfully!**\n\n"
+                f"📄 **Name:** `{filename}`\n"
+                f"📊 **Size:** {size_str}\n"
+                f"☁️ **Storage:** Google Drive\n\n"
+                f"🔗 **Share Link:**\n"
+                f"{share_link}\n\n"
+                f"💡 Access this file anytime from 'My Files'!"
+            )
+            
+            # Provide quick action buttons including Delete
+            success_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑️ Delete This File", callback_data=f"delete_stored_{inserted_id}")],
+                [
+                    InlineKeyboardButton("📂 My Files", callback_data='action_list_files'),
+                    InlineKeyboardButton("⬅️ Back", callback_data='menu_storage')
+                ]
+            ])
 
-            try:
-                # Upload file to Google Drive with streaming
-                file_metadata = {
-                    'name': filename,
-                    'parents': [DRIVE_FOLDER_ID] if DRIVE_FOLDER_ID else []
-                }
-                
-                # Use MediaFileUpload with resumable for streaming upload
-                media = MediaFileUpload(str(local_path), resumable=True)
-                drive_file = drive_service.files().create(
-                    body=file_metadata,
-                    media_body=media,
-                    fields='id, webViewLink'
-                ).execute()
-                
-                drive_file_id = drive_file.get('id')
-                
-                # Make file publicly accessible
-                drive_service.permissions().create(
-                    fileId=drive_file_id,
-                    body={'type': 'anyone', 'role': 'reader'}
-                ).execute()
-                
-                # Get shareable link
-                share_link = f"https://drive.google.com/file/d/{drive_file_id}/view?usp=sharing"
-                
-                # Save to database and capture inserted row id
-                inserted_id = db_pool.execute(
-                    "INSERT INTO stored_files (user_id, filename, file_size, drive_file_id, share_link) VALUES (?, ?, ?, ?, ?)",
-                    (user_id, filename, file_size, drive_file_id, share_link),
-                    fetch='insert'
-                )
-                
-                # Format file size
-                size_mb = file_size / (1024 * 1024)
-                if size_mb < 1:
-                    size_str = f"{file_size / 1024:.1f} KB"
-                else:
-                    size_str = f"{size_mb:.1f} MB"
-                
-                success_text = (
-                    f"✅ **File Uploaded Successfully!**\n\n"
-                    f"📄 **Name:** `{filename}`\n"
-                    f"📊 **Size:** {size_str}\n"
-                    f"☁️ **Storage:** Google Drive\n\n"
-                    f"🔗 **Share Link:**\n"
-                    f"{share_link}\n\n"
-                    f"💡 Access this file anytime from 'My Files'!"
-                )
-                
-                # Provide quick action buttons including Delete
-                success_keyboard = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🗑️ Delete This File", callback_data=f"delete_stored_{inserted_id}")],
-                    [
-                        InlineKeyboardButton("📂 My Files", callback_data='action_list_files'),
-                        InlineKeyboardButton("⬅️ Back", callback_data='menu_storage')
-                    ]
-                ])
-
-                await loading_msg.edit_text(
-                    success_text,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True,
-                    reply_markup=success_keyboard
-                )
-                
-            except Exception as drive_error:
+            await loading_msg.edit_text(
+                success_text,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True,
+                reply_markup=success_keyboard
+            )
+            
+        except Exception as drive_error:
                 import traceback
                 tb = traceback.format_exc()
                 logger.error(f"Google Drive upload error: {drive_error}\nTRACEBACK:\n{tb}")
@@ -4371,17 +4129,16 @@ async def handle_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     "Please check Google Drive configuration or try again later.",
                     parse_mode=ParseMode.MARKDOWN
                 )
-                
-        except Exception as e:
-            logger.error(f"Error in handle_file_upload: {e}")
-            try:
-                await loading_msg.edit_text(f"❌ Upload failed: {str(e)}")
-            except:
-                pass
-                
-        finally:
-            task_lock.unlock_user(user_id)
-            # Temp folder cleanup happens automatically
+            
+    except Exception as e:
+        logger.error(f"Error in handle_file_upload: {e}")
+        try:
+            await loading_msg.edit_text(f"❌ Upload failed: {str(e)}")
+        except:
+            pass
+            
+    finally:
+        task_lock.unlock_user(user_id)
 
 async def tts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -4559,77 +4316,71 @@ async def decrypt_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_lock.unlock_user(user_id)
 
 async def download_social_media(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, platform: str):
-    """Download videos/photos from Instagram, Facebook, etc. with streaming and temp folders"""
+    """Download videos/photos from Instagram, Facebook, etc."""
     user_id = update.effective_user.id
     loading_msg = await update.message.reply_text(f"⏳ Downloading from {platform}... Please wait...")
     
-    # Use temp folder for this download
-    async with temp_download_folder(user_id, f"social_{platform}") as temp_folder:
-        filename = ""
+    filename = ""
+    
+    try:
+        # Common options for yt-dlp
+        ydl_opts = {
+            'outtmpl': '%(id)s.%(ext)s',
+            'noplaylist': True,
+            'format': 'best',
+        }
         
-        try:
-            # Common options for yt-dlp - download to temp folder
-            ydl_opts = {
-                'outtmpl': str(temp_folder / '%(id)s.%(ext)s'),
-                'noplaylist': True,
-                'format': 'best',
-            }
-            
-            # Add ffmpeg location if available
-            if os.path.exists(FFMPEG_PATH):
-                ydl_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
-            
-            await loading_msg.edit_text(f"📥 Downloading from {platform}...")
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-            
-            # Enforce 2 GB file size limit
-            file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-            if file_size_mb > MAX_FILE_SIZE_MB:
-                await loading_msg.edit_text(
-                    f"❌ **File Too Large**\n\n"
-                    f"📊 Size: {file_size_mb:.1f} MB\n"
-                    f"⚠️ Maximum allowed: {MAX_FILE_SIZE_MB:.0f} MB (2 GB)\n\n"
-                    f"This prevents bot crashes and ensures stability.",
-                    parse_mode=ParseMode.MARKDOWN
+        # Add ffmpeg location if available
+        if os.path.exists(FFMPEG_PATH):
+            ydl_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
+        
+        await loading_msg.edit_text(f"📥 Downloading from {platform}...")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+        
+        # Get file size
+        file_size_mb = os.path.getsize(filename) / (1024 * 1024)
+        
+        await loading_msg.edit_text("📤 Uploading file... This may take a while...")
+        
+        # Stream upload (Telegram handles this internally when passed file handle)
+        with open(filename, 'rb') as file:
+            # Determine if it's a video or photo
+            ext = filename.split('.')[-1].lower()
+            if ext in ['jpg', 'jpeg', 'png', 'gif']:
+                await context.bot.send_photo(
+                    chat_id=update.message.chat_id,
+                    photo=file,
+                    caption=f"✅ Downloaded from {platform}!\n📦 Size: {file_size_mb:.1f}MB",
+                    read_timeout=300,
+                    write_timeout=300
                 )
-                return
-            
-            await loading_msg.edit_text("📤 Uploading file... This may take a while...")
-            
-            # Stream upload (Telegram handles this internally when passed file handle)
-            with open(filename, 'rb') as file:
-                # Determine if it's a video or photo
-                ext = filename.split('.')[-1].lower()
-                if ext in ['jpg', 'jpeg', 'png', 'gif']:
-                    await context.bot.send_photo(
-                        chat_id=update.message.chat_id,
-                        photo=file,
-                        caption=f"✅ Downloaded from {platform}!\n📦 Size: {file_size_mb:.1f}MB",
-                        read_timeout=300,
-                        write_timeout=300
-                    )
-                else:
-                    await context.bot.send_video(
-                        chat_id=update.message.chat_id,
-                        video=file,
-                        caption=f"✅ Downloaded from {platform}!\n📦 Size: {file_size_mb:.1f}MB",
-                        read_timeout=300,
-                        write_timeout=300,
-                        supports_streaming=True
-                    )
-            
-            await loading_msg.edit_text(f"✅ Download complete from {platform}!")
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout uploading file from {platform}")
-            await loading_msg.edit_text("❌ Upload timed out. File may be too large.")
-        except Exception as e:
-            logger.error(f"Error downloading from {platform}: {e}")
-            await loading_msg.edit_text(f"❌ Download failed. Please check the URL and try again.\n\n💡 Make sure the post is public!")
-        # Temp folder cleanup happens automatically
-
+            else:
+                await context.bot.send_video(
+                    chat_id=update.message.chat_id,
+                    video=file,
+                    caption=f"✅ Downloaded from {platform}!\n📦 Size: {file_size_mb:.1f}MB",
+                    read_timeout=300,
+                    write_timeout=300,
+                    supports_streaming=True
+                )
+        
+        await loading_msg.edit_text(f"✅ Download complete from {platform}!")
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout uploading file from {platform}")
+        await loading_msg.edit_text("❌ Upload timed out. File may be too large.")
+    except Exception as e:
+        logger.error(f"Error downloading from {platform}: {e}")
+        await loading_msg.edit_text(f"❌ Download failed. Please check the URL and try again.\n\n💡 Make sure the post is public!")
+    finally:
+        # Cleanup downloaded file
+        if filename and os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
 async def ytdl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -4701,75 +4452,72 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("⏳ Please wait for your previous task to complete!", show_alert=True)
         return
     
-    # Use temp folder for this user's download - auto-cleanup after completion
-    async with temp_download_folder(user_id, "ytdl") as temp_folder:
-        filename = None
-        files_to_send = []
+    filename = None
+    files_to_send = []
+    
+    try:
+        await query.answer()
         
-        try:
-            await query.answer()
-            
-            # Get download type from callback_data
-            data = query.data.split('_', 2)
-            download_type = data[1] if len(data) > 1 else 'auto'
-            
-            # Retrieve URL from storage instead of callback_data
-            url = get_download_url(user_id)
-            
-            if not url:
-                await query.edit_message_text(
-                    "❌ *Session Expired!*\n\n"
-                    "The download URL has expired or is not found.\n"
-                    "Please send the URL again and try once more.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("« Back", callback_data="menu_downloader")
-                    ]]),
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                task_lock.unlock_user(user_id)
-                return
-            
-            # Enhanced quality labels
-            quality_labels = {
-                'audio': '🎵 Audio MP3',
-                'audio_hq': '🎶 Audio HQ',
-                '360': '📱 360p Video',
-                '480': '📺 480p Video', 
-                '720': '🎬 720p HD',
-                'best': '🌟 Best Quality',
-                'auto': '🎬 Auto Quality'
-            }
-            quality_label = quality_labels.get(download_type, '🎬 Video')
-            
-            # Animated loading messages
-            loading_animations = [
-                f"🔍 Analyzing video...",
-                f"📊 Fetching metadata...",
-                f"⚙️ Preparing download...",
-                f"⏬ Downloading {quality_label}...",
-                f"🎯 Processing {quality_label}...",
-            ]
-            
-            loading_msg = await query.edit_message_text(text=loading_animations[0])
-            
-            # Animation: Show analyzing
-            await asyncio.sleep(0.5)
-            await loading_msg.edit_text(loading_animations[1])
-            
-            # Enhanced options for yt-dlp with anti-blocking measures and speed optimization
-            # Downloads go to user's isolated temp folder
-            common_opts = {
-                'outtmpl': str(temp_folder / '%(title)s.%(ext)s'),  # Download to user's temp folder
-                'cookiefile': '/root/Super-Bot-Test/cookies.txt',  # Cookie file for authentication
-                'noplaylist': True,
-                'quiet': False,  # Changed to False to see errors in logs
-                'verbose': True,  # Add full debug info
-                'no_warnings': False,  # Show warnings for debugging
-                'nocheckcertificate': True,
-                'ignoreerrors': False,
-                'logtostderr': True,
-                'addmetadata': True,
-                'extract_flat': False,
+        # Get download type from callback_data
+        data = query.data.split('_', 2)
+        download_type = data[1] if len(data) > 1 else 'auto'
+        
+        # Retrieve URL from storage instead of callback_data
+        url = get_download_url(user_id)
+        
+        if not url:
+            await query.edit_message_text(
+                "❌ *Session Expired!*\n\n"
+                "The download URL has expired or is not found.\n"
+                "Please send the URL again and try once more.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Back", callback_data="menu_downloader")
+                ]]),
+                parse_mode=ParseMode.MARKDOWN
+            )
+            task_lock.unlock_user(user_id)
+            return
+        
+        # Enhanced quality labels
+        quality_labels = {
+            'audio': '🎵 Audio MP3',
+            'audio_hq': '🎶 Audio HQ',
+            '360': '📱 360p Video',
+            '480': '📺 480p Video', 
+            '720': '🎬 720p HD',
+            'best': '🌟 Best Quality',
+            'auto': '🎬 Auto Quality'
+        }
+        quality_label = quality_labels.get(download_type, '🎬 Video')
+        
+        # Animated loading messages
+        loading_animations = [
+            f"🔍 Analyzing video...",
+            f"📊 Fetching metadata...",
+            f"⚙️ Preparing download...",
+            f"⏬ Downloading {quality_label}...",
+            f"🎯 Processing {quality_label}...",
+        ]
+        
+        loading_msg = await query.edit_message_text(text=loading_animations[0])
+        
+        # Animation: Show analyzing
+        await asyncio.sleep(0.5)
+        await loading_msg.edit_text(loading_animations[1])
+        
+        # Enhanced options for yt-dlp with anti-blocking measures and speed optimization
+        common_opts = {
+            'outtmpl': '%(title)s.%(ext)s',  # Download to current directory
+            'cookiefile': '/root/Super-Bot-Test/cookies.txt',  # Cookie file for authentication
+            'noplaylist': True,
+            'quiet': False,  # Changed to False to see errors in logs
+            'verbose': True,  # Add full debug info
+            'no_warnings': False,  # Show warnings for debugging
+            'nocheckcertificate': True,
+            'ignoreerrors': False,
+            'logtostderr': True,
+            'addmetadata': True,
+            'extract_flat': False,
                 # Anti-blocking measures
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'referer': 'https://www.google.com/',
@@ -4792,93 +4540,93 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'prefer_insecure': True,
                 'geo_bypass': True,
                 'geo_bypass_country': 'US',
-                # Performance
-                'noprogress': True,  # Disable progress bar for speed
-                'no_color': True,
+            # Performance
+            'noprogress': True,  # Disable progress bar for speed
+            'no_color': True,
+        }
+        
+        # Add ffmpeg location if available
+        if os.path.exists(FFMPEG_PATH):
+            common_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
+        
+        # Animation: Show preparing
+        await asyncio.sleep(0.5)
+        await loading_msg.edit_text(loading_animations[2])
+        
+        # Configure download based on type
+        if download_type == 'audio' or download_type == 'audio_hq':
+            # Audio download with animations
+            await loading_msg.edit_text("🎵 Downloading audio track...")
+            
+            codec = 'mp3' if download_type == 'audio' else 'best'
+            quality = '5' if download_type == 'audio_hq' else '7'  # VBR quality (0=best, 9=worst)
+            
+            ydl_opts = {
+                **common_opts,
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': codec,
+                    'preferredquality': quality,
+                }],
+            }
+        else:
+            # Video download with quality selection
+            await loading_msg.edit_text(f"🎬 Downloading {quality_label}...")
+            
+            # Quality format strings optimized for file size
+            format_strings = {
+                '360': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]',
+                '480': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]',
+                '720': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]',
+                'best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'auto': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]'
             }
             
-            # Add ffmpeg location if available
-            if os.path.exists(FFMPEG_PATH):
-                common_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
+            format_string = format_strings.get(download_type, format_strings['auto'])
             
-            # Animation: Show preparing
-            await asyncio.sleep(0.5)
-            await loading_msg.edit_text(loading_animations[2])
+            ydl_opts = {
+                **common_opts,
+                'format': format_string,
+                'merge_output_format': 'mp4',
+            }
+        
+        # Animation: Show downloading
+        await asyncio.sleep(0.5)
+        await loading_msg.edit_text(loading_animations[3])
+        
+        # Progress tracking variables
+        progress_data = {'status': '', 'percent': 0, 'speed': '', 'eta': ''}
+        last_update_time = 0
+        
+        def progress_hook(d):
+            """Real-time progress hook for yt-dlp"""
+            nonlocal last_update_time, progress_data
             
-            # Configure download based on type
-            if download_type == 'audio' or download_type == 'audio_hq':
-                # Audio download with animations
-                await loading_msg.edit_text("🎵 Downloading audio track...")
+            if d['status'] == 'downloading':
+                # Extract progress info
+                percent = d.get('_percent_str', '0%').strip()
+                speed = d.get('_speed_str', 'N/A').strip()
+                eta = d.get('_eta_str', 'N/A').strip()
                 
-                codec = 'mp3' if download_type == 'audio' else 'best'
-                quality = '5' if download_type == 'audio_hq' else '7'  # VBR quality (0=best, 9=worst)
-                
-                ydl_opts = {
-                    **common_opts,
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': codec,
-                        'preferredquality': quality,
-                    }],
+                progress_data = {
+                    'status': 'downloading',
+                    'percent': percent,
+                    'speed': speed,
+                    'eta': eta
                 }
-            else:
-                # Video download with quality selection
-                await loading_msg.edit_text(f"🎬 Downloading {quality_label}...")
-                
-                # Quality format strings optimized for file size
-                format_strings = {
-                    '360': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]',
-                    '480': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]',
-                    '720': 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]',
-                    'best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                    'auto': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]'
-                }
-                
-                format_string = format_strings.get(download_type, format_strings['auto'])
-                
-                ydl_opts = {
-                    **common_opts,
-                    'format': format_string,
-                    'merge_output_format': 'mp4',
-                }
-            
-            # Animation: Show downloading
-            await asyncio.sleep(0.5)
-            await loading_msg.edit_text(loading_animations[3])
-            
-            # Progress tracking variables
-            progress_data = {'status': '', 'percent': 0, 'speed': '', 'eta': ''}
-            last_update_time = 0
-            
-            def progress_hook(d):
-                """Real-time progress hook for yt-dlp"""
-                nonlocal last_update_time, progress_data
-                
-                if d['status'] == 'downloading':
-                    # Extract progress info
-                    percent = d.get('_percent_str', '0%').strip()
-                    speed = d.get('_speed_str', 'N/A').strip()
-                    eta = d.get('_eta_str', 'N/A').strip()
-                    
-                    progress_data = {
-                        'status': 'downloading',
-                        'percent': percent,
-                        'speed': speed,
-                        'eta': eta
-                    }
-                elif d['status'] == 'finished':
-                    progress_data['status'] = 'finished'
-            
-            # Add progress hook to options
-            ydl_opts['progress_hooks'] = [progress_hook]
-            
-            # Download in thread pool (non-blocking for other users)
-            loop = asyncio.get_event_loop()
-            
-            async def animate_download():
-                """Show real-time progress bar while downloading"""
-                nonlocal last_update_time
+            elif d['status'] == 'finished':
+                progress_data['status'] = 'finished'
+        
+        # Add progress hook to options
+        ydl_opts['progress_hooks'] = [progress_hook]
+        
+        # Download in thread pool (non-blocking for other users)
+        loop = asyncio.get_event_loop()
+        
+        async def animate_download():
+            """Show real-time progress bar while downloading"""
+            nonlocal last_update_time
             
             while True:
                 try:
@@ -5039,46 +4787,27 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Check file size and enforce 2 GB limit
             file_size_mb = os.path.getsize(filename) / (1024 * 1024)
-            original_file_size_mb = file_size_mb  # Store original for percentage calculation
-            
-            # Enforce 2 GB maximum file size
-            if file_size_mb > MAX_FILE_SIZE_MB:
-                await loading_msg.edit_text(
-                    f"❌ **File Too Large**\n\n"
-                    f"📊 Downloaded size: {file_size_mb:.1f} MB\n"
-                    f"⚠️ Maximum allowed: {MAX_FILE_SIZE_MB:.0f} MB (2 GB)\n\n"
-                    f"**Why this limit?**\n"
-                    f"• Prevents bot crashes\n"
-                    f"• Ensures stability for all users\n"
-                    f"• Protects server resources\n\n"
-                    f"**Solutions:**\n"
-                    f"✅ Choose lower quality (360p/480p)\n"
-                    f"✅ Use Audio Only option\n"
-                    f"✅ Download shorter videos",
-                    reply_markup=get_main_menu_keyboard(),
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                task_lock.unlock_user(user_id)
-                return
-            
-            # Warn user about very large files
-            if file_size_mb > 100:
-                await loading_msg.edit_text(
-                    f"⚠️ **Large File Detected!**\n\n"
-                    f"📊 Size: {file_size_mb:.1f} MB\n\n"
-                    f"This will take a while to upload.\n"
-                    f"Consider using a lower quality option for faster results.\n\n"
-                    f"📤 Preparing upload..."
-                )
-                await asyncio.sleep(3)
-            
-            # Handle large files with compression/splitting
-            files_to_send = [filename]
-            compressed = False
-            split = False
-            
-            # Check Telegram limits
-            if file_size_mb > 2000:  # Over 2GB (Telegram limit)
+        original_file_size_mb = file_size_mb  # Store original for percentage calculation
+        
+        # Check file size (remove 2GB limit check)
+        # Warn user about very large files
+        if file_size_mb > 100:
+            await loading_msg.edit_text(
+                f"⚠️ **Large File Detected!**\n\n"
+                f"📊 Size: {file_size_mb:.1f} MB\n\n"
+                f"This will take a while to upload.\n"
+                f"Consider using a lower quality option for faster results.\n\n"
+                f"📤 Preparing upload..."
+            )
+            await asyncio.sleep(3)
+        
+        # Handle large files with compression/splitting
+        files_to_send = [filename]
+        compressed = False
+        split = False
+        
+        # Check Telegram limits
+        if file_size_mb > 2000:  # Over 2GB (Telegram limit)
                 await loading_msg.edit_text(
                     f"❌ **File Too Large!**\n\n"
                     f"📊 Size: {file_size_mb:.1f} MB\n"
@@ -5098,142 +4827,142 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Files >45MB will be split into chunks instead (instant!)
             
             # For videos: Try to upload up to 2GB directly (Telegram's real limit)
-            # Only split if absolutely necessary (>2GB or upload fails)
-            # Telegram has undocumented limits around 50MB for sendVideo
-            # But we'll try anyway - worst case it fails and user can try lower quality
-            if file_size_mb > 2000:  # Only split if over 2GB
-                try:
-                    await loading_msg.edit_text(
-                        f"✂️ **Splitting Large File...**\n\n"
-                        f"📊 Size: {file_size_mb:.1f} MB\n"
-                        f"📦 Creating 45MB chunks...\n\n"
-                        f"⏳ Please wait..."
-                    )
+        # Only split if absolutely necessary (>2GB or upload fails)
+        # Telegram has undocumented limits around 50MB for sendVideo
+        # But we'll try anyway - worst case it fails and user can try lower quality
+        if file_size_mb > 2000:  # Only split if over 2GB
+            try:
+                await loading_msg.edit_text(
+                    f"✂️ **Splitting Large File...**\n\n"
+                    f"📊 Size: {file_size_mb:.1f} MB\n"
+                    f"📦 Creating 45MB chunks...\n\n"
+                    f"⏳ Please wait..."
+                )
+                
+                # Run split in thread pool
+                loop = asyncio.get_event_loop()
+                chunk_files = await loop.run_in_executor(None, split_file, filename, 45)
+                
+                if len(chunk_files) > 1:
+                    files_to_send = chunk_files
+                    split = True
                     
-                    # Run split in thread pool
-                    loop = asyncio.get_event_loop()
-                    chunk_files = await loop.run_in_executor(None, split_file, filename, 45)
-                    
-                    if len(chunk_files) > 1:
-                        files_to_send = chunk_files
-                        split = True
-                        
-                        await loading_msg.edit_text(
-                            f"✅ **File Split Complete!**\n\n"
-                            f"📦 Created {len(chunk_files)} parts\n"
-                            f"📊 ~{file_size_mb/len(chunk_files):.1f} MB each\n\n"
-                            f"📤 Uploading parts..."
-                        )
-                except Exception as e:
-                    logger.error(f"File splitting failed: {e}")
-                    files_to_send = [filename]
-            
-            # Check Telegram limits one more time after processing
-            for check_file in files_to_send:
-                check_size = os.path.getsize(check_file) / (1024 * 1024)
-                if check_size > 2000:
                     await loading_msg.edit_text(
-                        f"❌ **File Still Too Large!**\n\n"
-                        f"📊 Size: {check_size:.1f} MB\n\n"
-                        f"**Please use lower quality option.**"
+                        f"✅ **File Split Complete!**\n\n"
+                        f"📦 Created {len(chunk_files)} parts\n"
+                        f"📊 ~{file_size_mb/len(chunk_files):.1f} MB each\n\n"
+                        f"📤 Uploading parts..."
                     )
-                    for f in files_to_send:
-                        try:
-                            os.remove(f)
-                        except:
-                            pass
-                    return
-            
-            # Show upload progress with size info
-            if file_size_mb > 50:
-                upload_emoji = "🚀"
-                warning = "\n⏳ Large file - Uploading may take time..."
-                estimate_time = int(file_size_mb / 2)  # Rough estimate: 2MB/sec
-                if estimate_time > 60:
-                    estimate_str = f"\n⏱️ Estimated: ~{estimate_time // 60} min"
-                else:
-                    estimate_str = f"\n⏱️ Estimated: ~{estimate_time} sec"
-            else:
-                upload_emoji = "📤"
-                warning = ""
-                estimate_str = ""
-            
-            upload_start_time = time.time()
-            await loading_msg.edit_text(
-                f"{upload_emoji} **Uploading to Telegram...**\n\n"
-                f"📊 Size: {file_size_mb:.1f} MB\n"
-                f"🎯 Quality: {quality_label}{warning}{estimate_str}\n\n"
-                f"💡 File will be auto-deleted after upload",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            
-            # Prepare caption with video info
-            duration_str = ""
-            if video_info.get('duration'):
-                mins = int(video_info['duration'] // 60)
-                secs = int(video_info['duration'] % 60)
-                duration_str = f" • ⏱️ {mins}:{secs:02d}"
-            
-            # Use plain text to avoid Markdown parsing errors with special characters
-            title = video_info.get('title', 'Video')[:50]
-            uploader = video_info.get('uploader', 'Unknown')[:30]
-            
-            caption = (
-                f"✅ Downloaded Successfully!\n\n"
-                f"🎬 {title}\n"
-                f"👤 {uploader}\n"
-                f"📊 {file_size_mb:.1f} MB{duration_str}"
-            )
-            
-            # Create upload progress animation
-            async def animate_upload_progress():
-                """Show animated upload progress"""
-                progress_bars = [
-                    "▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 0%",
-                    "▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 5%",
-                    "▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 10%",
-                    "▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 15%",
-                    "▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 20%",
-                    "▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 25%",
-                    "▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 30%",
-                    "▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱ 35%",
-                    "▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱ 40%",
-                    "▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱ 45%",
-                    "▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱ 50%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱ 55%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱ 60%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱ 65%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱ 70%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱ 75%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱ 80%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱ 85%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱ 90%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱ 95%",
-                    "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 100%",
-                ]
-                idx = 0
-                last_update = time.time()
-                while True:
+            except Exception as e:
+                logger.error(f"File splitting failed: {e}")
+                files_to_send = [filename]
+        
+        # Check Telegram limits one more time after processing
+        for check_file in files_to_send:
+            check_size = os.path.getsize(check_file) / (1024 * 1024)
+            if check_size > 2000:
+                await loading_msg.edit_text(
+                    f"❌ **File Still Too Large!**\n\n"
+                    f"📊 Size: {check_size:.1f} MB\n\n"
+                    f"**Please use lower quality option.**"
+                )
+                for f in files_to_send:
                     try:
-                        current_time = time.time()
-                        elapsed = int(current_time - upload_start_time)
-                        
-                        # Update every 1.5 seconds for smoother progress
-                        if current_time - last_update >= 1.5:
-                            progress = progress_bars[min(idx, len(progress_bars) - 1)]
-                            await loading_msg.edit_text(
-                                f"📤 **Uploading...**\n\n"
-                                f"{progress}\n\n"
-                                f"📊 {file_size_mb:.1f} MB\n"
-                                f"⏱️ Elapsed: {elapsed}s\n\n"
-                                f"🗑️ Auto-cleanup enabled",
-                                parse_mode=ParseMode.MARKDOWN
-                            )
-                            last_update = current_time
-                            idx += 1
-                        await asyncio.sleep(1)
+                        os.remove(f)
                     except:
-                        break
+                        pass
+                return
+        
+        # Show upload progress with size info
+        if file_size_mb > 50:
+            upload_emoji = "🚀"
+            warning = "\n⏳ Large file - Uploading may take time..."
+            estimate_time = int(file_size_mb / 2)  # Rough estimate: 2MB/sec
+            if estimate_time > 60:
+                estimate_str = f"\n⏱️ Estimated: ~{estimate_time // 60} min"
+            else:
+                estimate_str = f"\n⏱️ Estimated: ~{estimate_time} sec"
+        else:
+            upload_emoji = "📤"
+            warning = ""
+            estimate_str = ""
+        
+        upload_start_time = time.time()
+        await loading_msg.edit_text(
+            f"{upload_emoji} **Uploading to Telegram...**\n\n"
+            f"📊 Size: {file_size_mb:.1f} MB\n"
+            f"🎯 Quality: {quality_label}{warning}{estimate_str}\n\n"
+            f"💡 File will be auto-deleted after upload",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        
+        # Prepare caption with video info
+        duration_str = ""
+        if video_info.get('duration'):
+            mins = int(video_info['duration'] // 60)
+            secs = int(video_info['duration'] % 60)
+            duration_str = f" • ⏱️ {mins}:{secs:02d}"
+        
+        # Use plain text to avoid Markdown parsing errors with special characters
+        title = video_info.get('title', 'Video')[:50]
+        uploader = video_info.get('uploader', 'Unknown')[:30]
+        
+        caption = (
+            f"✅ Downloaded Successfully!\n\n"
+            f"🎬 {title}\n"
+            f"👤 {uploader}\n"
+            f"📊 {file_size_mb:.1f} MB{duration_str}"
+        )
+        
+        # Create upload progress animation
+        async def animate_upload_progress():
+            """Show animated upload progress"""
+            progress_bars = [
+                "▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 0%",
+                "▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 5%",
+                "▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 10%",
+                "▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 15%",
+                "▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 20%",
+                "▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 25%",
+                "▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱▱ 30%",
+                "▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱▱ 35%",
+                "▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱▱ 40%",
+                "▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱▱ 45%",
+                "▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱▱ 50%",
+                "▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱▱ 55%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱▱ 60%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱▱ 65%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱▱ 70%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱▱ 75%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱▱ 80%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱▱ 85%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱▱ 90%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▱ 95%",
+                "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰ 100%",
+            ]
+            idx = 0
+            last_update = time.time()
+            while True:
+                try:
+                    current_time = time.time()
+                    elapsed = int(current_time - upload_start_time)
+                    
+                    # Update every 1.5 seconds for smoother progress
+                    if current_time - last_update >= 1.5:
+                        progress = progress_bars[min(idx, len(progress_bars) - 1)]
+                        await loading_msg.edit_text(
+                            f"📤 **Uploading...**\n\n"
+                            f"{progress}\n\n"
+                            f"📊 {file_size_mb:.1f} MB\n"
+                            f"⏱️ Elapsed: {elapsed}s\n\n"
+                            f"🗑️ Auto-cleanup enabled",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        last_update = current_time
+                        idx += 1
+                    await asyncio.sleep(1)
+                except:
+                    break
             
             # Upload with animated progress
             upload_success = False
@@ -5428,7 +5157,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except asyncio.CancelledError:
                             pass
                         
-                            # Show success message with main menu
+                        # Show success message with main menu
                         await loading_msg.edit_text(
                             f"✅ **Download Complete!** 🎉\n\n"
                             f"⏱️ Upload time: {upload_time}s\n\n"
@@ -5465,7 +5194,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             except asyncio.CancelledError:
                                 pass
                             raise upload_error
-                
+            
             finally:
                 # Ensure animation is stopped if still running
                 if not animation_task.cancelled() and not animation_task.done():
@@ -5474,120 +5203,120 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await animation_task
                     except asyncio.CancelledError:
                         pass
-                                
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout uploading file for user {query.from_user.id}")
-            await loading_msg.edit_text(
-                "❌ **Upload Timeout**\n\n"
-                "⏱️ Upload took too long\n\n"
+                        
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout uploading file for user {query.from_user.id}")
+        await loading_msg.edit_text(
+            "❌ **Upload Timeout**\n\n"
+            "⏱️ Upload took too long\n\n"
+            "**Try:**\n"
+            "• Lower quality option\n"
+            "• Audio only format\n"
+            "• Shorter video duration\n"
+            "• Try again with better connection",
+            reply_markup=get_main_menu_keyboard()
+        )
+    except yt_dlp.utils.DownloadError as e:
+        logger.error(f"yt-dlp download error for user {query.from_user.id}: {e}")
+        error_msg = str(e).lower()
+        
+        # Provide specific error messages based on error type
+        if '403' in error_msg or 'forbidden' in error_msg:
+            message = (
+                "❌ **Access Blocked (403)**\n\n"
+                "The website blocked the download request.\n\n"
+                "**This usually happens when:**\n"
+                "• Video has DRM protection\n"
+                "• Site requires login/subscription\n"
+                "• Geographic restrictions\n"
+                "• Anti-bot measures active\n\n"
                 "**Try:**\n"
-                "• Lower quality option\n"
-                "• Audio only format\n"
-                "• Shorter video duration\n"
-                "• Try again with better connection",
-                reply_markup=get_main_menu_keyboard()
+                "✅ Different video from same site\n"
+                "✅ Lower quality option\n"
+                "✅ Audio only format\n"
+                "✅ Wait a few minutes and retry\n\n"
+                "💡 Some premium/protected content cannot be downloaded."
             )
-        except yt_dlp.utils.DownloadError as e:
-            logger.error(f"yt-dlp download error for user {query.from_user.id}: {e}")
-            error_msg = str(e).lower()
-            
-            # Provide specific error messages based on error type
-            if '403' in error_msg or 'forbidden' in error_msg:
-                message = (
-                    "❌ **Access Blocked (403)**\n\n"
-                    "The website blocked the download request.\n\n"
-                    "**This usually happens when:**\n"
-                    "• Video has DRM protection\n"
-                    "• Site requires login/subscription\n"
-                    "• Geographic restrictions\n"
-                    "• Anti-bot measures active\n\n"
-                    "**Try:**\n"
-                    "✅ Different video from same site\n"
-                    "✅ Lower quality option\n"
-                    "✅ Audio only format\n"
-                    "✅ Wait a few minutes and retry\n\n"
-                    "💡 Some premium/protected content cannot be downloaded."
-                )
-            elif 'private' in error_msg or 'unavailable' in error_msg:
-                message = (
-                    "❌ **Video Unavailable**\n\n"
-                    "This video cannot be accessed.\n\n"
-                    "**Possible reasons:**\n"
-                    "• Video is private or removed\n"
-                    "• Account required\n"
-                    "• Geographic restrictions"
-                )
-            elif 'age' in error_msg or 'sign in' in error_msg:
-                message = (
-                    "❌ **Age-Restricted Content**\n\n"
-                    "This video requires sign-in.\n\n"
-                    "Bot cannot download age-restricted content."
-                )
-            elif 'format' in error_msg:
-                message = (
-                    "❌ **Format Not Available**\n\n"
-                    "Requested quality not available.\n\n"
-                    "**Try:**\n"
-                    "• Different quality option\n"
-                    "• Audio only format"
-                )
-            elif '429' in error_msg or 'too many' in error_msg:
-                message = (
-                    "❌ **Rate Limited**\n\n"
-                    "Too many requests detected.\n\n"
-                    "**Please:**\n"
-                    "⏰ Wait 5-10 minutes\n"
-                    "🔄 Then try again"
-                )
-            else:
-                message = (
-                    "❌ **Download Failed**\n\n"
-                    "Could not download this video.\n\n"
-                    "**Try:**\n"
-                    "• Different video\n"
-                    "• Different quality\n"
-                    "• Check if URL is valid\n"
-                    "• Try audio format instead"
-                )
-            
-            await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
-        except Exception as e:
-            error_name = type(e).__name__
-            error_msg = str(e)
-            logger.error(f"Error in ytdl_callback for user {query.from_user.id}: {error_name}: {error_msg}")
-            
-            # Smart error messages based on file_size_mb if available
+        elif 'private' in error_msg or 'unavailable' in error_msg:
+            message = (
+                "❌ **Video Unavailable**\n\n"
+                "This video cannot be accessed.\n\n"
+                "**Possible reasons:**\n"
+                "• Video is private or removed\n"
+                "• Account required\n"
+                "• Geographic restrictions"
+            )
+        elif 'age' in error_msg or 'sign in' in error_msg:
+            message = (
+                "❌ **Age-Restricted Content**\n\n"
+                "This video requires sign-in.\n\n"
+                "Bot cannot download age-restricted content."
+            )
+        elif 'format' in error_msg:
+            message = (
+                "❌ **Format Not Available**\n\n"
+                "Requested quality not available.\n\n"
+                "**Try:**\n"
+                "• Different quality option\n"
+                "• Audio only format"
+            )
+        elif '429' in error_msg or 'too many' in error_msg:
+            message = (
+                "❌ **Rate Limited**\n\n"
+                "Too many requests detected.\n\n"
+                "**Please:**\n"
+                "⏰ Wait 5-10 minutes\n"
+                "🔄 Then try again"
+            )
+        else:
+            message = (
+                "❌ **Download Failed**\n\n"
+                "Could not download this video.\n\n"
+                "**Try:**\n"
+                "• Different video\n"
+                "• Different quality\n"
+                "• Check if URL is valid\n"
+                "• Try audio format instead"
+            )
+        
+        await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
+    except Exception as e:
+        error_name = type(e).__name__
+        error_msg = str(e)
+        logger.error(f"Error in ytdl_callback for user {query.from_user.id}: {error_name}: {error_msg}")
+        
+        # Smart error messages based on file_size_mb if available
+        try:
+            current_size = file_size_mb if 'file_size_mb' in locals() else 0
+        except:
+            current_size = 0
+        
+        message = (
+            "❌ **Upload Failed**\n\n"
+            f"⚠️ {error_name}\n\n"
+            "**Recommendations:**\n"
+            "✅ Try lower quality (360p/480p)\n"
+            "✅ Use Audio Only option\n"
+            "✅ Videos < 100MB work best"
+        )
+        
+        await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
+    finally:
+        # Unlock user after task completion
+        task_lock.unlock_user(user_id)
+        # Cleanup downloaded files
+        if filename and os.path.exists(filename):
             try:
-                current_size = file_size_mb if 'file_size_mb' in locals() else 0
+                os.remove(filename)
             except:
-                current_size = 0
-            
-            if current_size > MAX_FILE_SIZE_MB:
-                message = (
-                    "❌ **File Too Large**\n\n"
-                    f"📊 Size: {current_size:.1f} MB\n"
-                    f"⚠️ Maximum: {MAX_FILE_SIZE_MB:.0f} MB\n\n"
-                    "**Solutions:**\n"
-                    "✅ Choose 360p or 480p\n"
-                    "✅ Use Audio Only\n"
-                    "✅ Download shorter videos"
-                )
-            else:
-                message = (
-                    "❌ **Upload Failed**\n\n"
-                    f"⚠️ {error_name}\n\n"
-                    "**Recommendations:**\n"
-                    "✅ Try lower quality (360p/480p)\n"
-                    "✅ Use Audio Only option\n"
-                    "✅ Videos < 100MB work best"
-                )
-            
-            await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
-        finally:
-            # Unlock user after task completion
-            task_lock.unlock_user(user_id)
-            # Temp folder cleanup happens automatically via context manager
-            # All files in temp_folder are deleted when async with block exits
+                pass
+        if files_to_send:
+            for file_to_cleanup in files_to_send:
+                if file_to_cleanup and os.path.exists(file_to_cleanup):
+                    try:
+                        os.remove(file_to_cleanup)
+                    except:
+                        pass
 
 async def shorten_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
