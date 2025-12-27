@@ -4760,8 +4760,9 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Downloads go to user's isolated temp folder
             common_opts = {
                 'outtmpl': str(temp_folder / '%(title)s.%(ext)s'),  # Download to user's temp folder
+                'cookiefile': '/root/Super-Bot-Test/cookies.txt',  # Cookie file for authentication
                 'noplaylist': True,
-                'quiet': True,
+                'quiet': False,  # Changed to False to see errors in logs
                 'no_warnings': True,
                 'extract_flat': False,
                 # Anti-blocking measures
