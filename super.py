@@ -4764,7 +4764,11 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'noplaylist': True,
                 'quiet': False,  # Changed to False to see errors in logs
                 'verbose': True,  # Add full debug info
-                'no_warnings': True,
+                'no_warnings': False,  # Show warnings for debugging
+                'nocheckcertificate': True,
+                'ignoreerrors': False,
+                'logtostderr': True,
+                'addmetadata': True,
                 'extract_flat': False,
                 # Anti-blocking measures
                 'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
