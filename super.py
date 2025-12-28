@@ -4454,6 +4454,9 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     filename = None
     files_to_send = []
+    title = "Video"
+    uploader = "Unknown"
+    duration_str = ""
     
     try:
         await query.answer()
