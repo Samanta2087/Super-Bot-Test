@@ -4514,7 +4514,6 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Enhanced options for yt-dlp with anti-blocking measures and speed optimization
         common_opts = {
             'outtmpl': '%(title)s.%(ext)s',  # Download to current directory
-            'cookiefile': '/root/Super-Bot-Test/cookies.txt',  # Cookie file for authentication
             'noplaylist': True,
             'quiet': False,  # Changed to False to see errors in logs
             'verbose': True,  # Add full debug info
@@ -5294,9 +5293,9 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if loading_msg:
             await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
     except Exception as e:
+        logger.exception(f"Error in ytdl_callback for user {query.from_user.id}")
         error_name = type(e).__name__
         error_msg = str(e)
-        logger.error(f"Error in ytdl_callback for user {query.from_user.id}: {error_name}: {error_msg}")
         
         # Smart error messages based on file_size_mb if available
         try:
