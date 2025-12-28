@@ -126,7 +126,7 @@ try:
         apscheduler.util.__dict__['get_localzone'] = always_utc
         apscheduler.util.__dict__['astimezone'] = always_utc_astimezone
     
-    print("✓ APScheduler timezone patches applied successfully")
+    print("[OK] APScheduler timezone patches applied successfully")
     
 except Exception as e:
     print(f"⚠ Warning: Could not patch apscheduler: {e}")
@@ -191,7 +191,7 @@ if not BOT_TOKEN or BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
 
 if ADMIN_ID == 0:
     print("\n" + "="*60)
-    print("⚠️  WARNING: ADMIN_USER_ID not set!")
+    print("[WARNING] ADMIN_USER_ID not set!")
     print("="*60)
     print("Admin features will be disabled.")
     print("Get your user ID from @userinfobot and add to .env")
@@ -217,7 +217,7 @@ else:
         import subprocess
         result = subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=2)
         if result.returncode == 0:
-            print("✓ Using system FFmpeg from PATH")
+            print("[OK] Using system FFmpeg from PATH")
     except:
         print("⚠ FFmpeg not found - video/audio features may not work")
         print("  Install FFmpeg: apt-get install ffmpeg (Linux) or download from ffmpeg.org")
@@ -5022,7 +5022,12 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     animation_task.cancel()
                                     
                                     # Progress tracking for Google Drive upload
-                                    progress_info = {'percent': 0, 'uploaded_mb': 0, 'total_mb': file_size_mb}
+                                    progress_info = {
+                                        'percent': 0, 
+                                        'uploaded_mb': 0, 
+                                        'total_mb': file_size_mb,
+                                        'quality_label': quality_label  # Store for nested function access
+                                    }
                                     last_progress_update = 0
                                     
                                     async def update_drive_progress():
@@ -5038,6 +5043,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                     percent = progress_info['percent']
                                                     uploaded = progress_info['uploaded_mb']
                                                     total = progress_info['total_mb']
+                                                    label = progress_info['quality_label']
                                                     
                                                     # Create smooth progress bar (50 blocks for 2% increments)
                                                     filled = int(percent / 2)  # 50 blocks = 2% each
@@ -5047,7 +5053,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                                         f"☁️ **Uploading to Google Drive**\n\n"
                                                         f"Progress: `{bar}` {percent:.1f}%\n"
                                                         f"Uploaded: {uploaded:.1f} MB / {total:.1f} MB\n"
-                                                        f"Quality: {quality_label}\n\n"
+                                                        f"Quality: {label}\n\n"
                                                         f"💡 Large files use Google Drive for reliability"
                                                     )
                                                     
