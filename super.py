@@ -4458,6 +4458,8 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uploader = "Unknown"
     duration_str = ""
     loading_msg = None
+    file_size_mb = 0
+    download_type = 'auto'
     
     try:
         await query.answer()
