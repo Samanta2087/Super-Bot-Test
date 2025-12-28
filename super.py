@@ -4457,6 +4457,7 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     title = "Video"
     uploader = "Unknown"
     duration_str = ""
+    loading_msg = None
     
     try:
         await query.answer()
@@ -5288,7 +5289,8 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "• Try audio format instead"
             )
         
-        await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
+        if loading_msg:
+            await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
     except Exception as e:
         error_name = type(e).__name__
         error_msg = str(e)
@@ -5309,7 +5311,10 @@ async def ytdl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Videos < 100MB work best"
         )
         
-        await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
+        if loading_msg:
+            await loading_msg.edit_text(message, reply_markup=get_main_menu_keyboard())
+        else:
+            await query.message.reply_text(message, reply_markup=get_main_menu_keyboard())
     finally:
         # Unlock user after task completion
         task_lock.unlock_user(user_id)
